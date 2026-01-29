@@ -8,29 +8,41 @@ format:
 author: 'Sedona Spann'
 date: '28 Jan 2026'
 ---
-# background on small sample size
-Non-parametric Tests: When data violates normality assumptions or the sample is too small (\(n<15-20\)), use Mann-Whitney U, Wilcoxon signed-rank, or Kruskal-Wallis tests.
-Alternative Modeling:Bayesian Methods: Often more robust than frequentist approaches for small samples.
-Permutation Tests/Bootstrapping: Use resampling to estimate confidence intervals without assuming a normal distribution.
-Generalized Linear Mixed Models (GLMMs): Use to account for nested data or random effects, which can improve power by structuring the error term.
-Focus on Effect Sizes: Instead of just \(p\)-values, report effect sizes and confidence intervals to show the strength of findings rather than just significance.
-Data Aggregation/Transformation:Convert annual data into quarterly or monthly data if appropriate.
-Use the 10% rule: If the sample is less than 10% of the total population, observations can be treated as independent.
-Reporting and Interpretation: Acknowledge low power and high risk of type II errors (false negatives). 
-Emphasize that results are exploratory. For ecological modeling, ensure that interaction terms are kept to a minimum (pairwise) to avoid overfitting. 
 
+# Background on Small Sample Sizes
+
+Non-parametric Tests: When data violates normality assumptions or the sample is too small n\<15-20 , use Mann-Whitney U, Wilcoxon signed-rank, or Kruskal-Wallis tests.
+
+Alternative Modeling
+
+Bayesian Methods: Often more robust than frequent approaches for small samples.
+
+Permutation Tests/Bootstrapping: Use resampling to estimate confidence intervals without assuming a normal distribution.
+
+Generalized Linear Mixed Models (GLMMs): Use to account for nested data or random effects, which can improve power by structuring the error term.
+
+Focus on Effect Sizes: Instead of just p-values, report effect sizes and confidence intervals to show the strength of findings rather than just significance.
+
+Data Aggregation/Transformation:Convert annual data into quarterly or monthly data if appropriate.
+
+Use the 10% rule: If the sample is less than 10% of the total population, observations can be treated as independent.
+
+Reporting and Interpretation: Acknowledge low power and high risk of type II errors (false negatives). Emphasize that results are exploratory. For ecological modeling, ensure that interaction terms are kept to a minimum (pairwise) to avoid overfitting. 
 
 # Hypotheses
-**Hypothesis 1:** 
 
-**Hypothesis 2:** 
+**Hypothesis 1:**
+
+**Hypothesis 2:**
 
 # Install packages
+
 ```{r}
 install.packages(c("tidyverse","lme4","sjPlot","ggsignif","emmeans","ggpubr","dplyr","ggplot2","lattice","glmmTMB","DHARMa","geepack","performance","ggeffects"))
 ```
 
 # Load packages
+
 ```{r}
 library(tidyverse)
 library(lme4)
@@ -49,6 +61,7 @@ library(ggeffects)
 ```
 
 # Load data
+
 ```{r}
 getwd()
 
@@ -62,3 +75,26 @@ head(ds)
 ```
 
 ## Calculate
+
+```{r}
+# Find the mean biomass of the dead pots for each site to use in MGR calculation
+dead_means <- df %>%
+  filter(Treatment=="ST") %>%
+  group_by(Site, Seed_Source) %>%
+  summarize(Mean_Dead_Shoot_Biomass_g=mean(Round_2_Dry_Shoot_Weight))
+
+# Calculate SPAD averages
+df <- df %>%
+  mutate(SPAD_Avg = (SPAD_1 + SPAD_2 + SPAD_3) / 3)
+
+# Calculate MGR using sterile plant biomass averages
+df <- df %>%
+  inner_join(dead_means, by=c("Site", "Seed_Source")) %>%
+  mutate(MGR = case_when( # Calculate MGR
+    Treatment != "ST" ~ log(Round_2_Dry_Shoot_Weight/Mean_Dead_Shoot_Biomass_g, base=exp(1)), # Apply the MGR formula to the live pots
+    Treatment == "ST" ~ NA # Dead pots do not have an MGR value)
+  ) )
+
+df <- df %>%
+  filter(Treatment != "ST")
+```
