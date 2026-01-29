@@ -1,0 +1,63 @@
+---
+title: "EMF 28 Jan 2026"
+editor: visual
+format:
+  html:
+    code-fold: show
+    code-summary: "Show the code"
+author: 'Sedona Spann'
+date: '28 Jan 2026'
+---
+##background on small sample size
+Non-parametric Tests: When data violates normality assumptions or the sample is too small (\(n<15-20\)), use Mann-Whitney U, Wilcoxon signed-rank, or Kruskal-Wallis tests.
+Alternative Modeling:Bayesian Methods: Often more robust than frequentist approaches for small samples.
+Permutation Tests/Bootstrapping: Use resampling to estimate confidence intervals without assuming a normal distribution.
+Generalized Linear Mixed Models (GLMMs): Use to account for nested data or random effects, which can improve power by structuring the error term.
+Focus on Effect Sizes: Instead of just \(p\)-values, report effect sizes and confidence intervals to show the strength of findings rather than just significance.
+Data Aggregation/Transformation:Convert annual data into quarterly or monthly data if appropriate.
+Use the 10% rule: If the sample is less than 10% of the total population, observations can be treated as independent.
+Reporting and Interpretation: Acknowledge low power and high risk of type II errors (false negatives). 
+Emphasize that results are exploratory. For ecological modeling, ensure that interaction terms are kept to a minimum (pairwise) to avoid overfitting. 
+
+
+## Hypotheses
+
+**Hypothesis 1:** 
+
+**Hypothesis 2:** 
+
+## Load packages, load data
+
+```{r}
+library(tidyverse)
+library(lme4)
+library(sjPlot)
+library(ggsignif)
+library(emmeans)
+library(ggpubr)
+library(dplyr)
+library(ggplot2)
+library(lattice)
+library(glmmTMB)
+library(DHARMa)
+library(geepack)
+library(performance)
+library(ggeffects)
+```
+
+## Load data
+
+```{r}
+getwd()
+
+#This is my path -
+setwd("C:/Users/sms689/Downloads")
+
+ds <- read.csv("EMF Crop Growth Fall 2024.csv") #Using the cleaned up dataset.
+
+View(ds)
+
+ds
+```
+
+## Calculate
