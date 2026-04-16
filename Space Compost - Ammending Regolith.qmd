@@ -1,0 +1,765 @@
+---
+title: "Space Compost - Ammending Regolith"
+authors: "Sedona Spann"
+date: "8 April, 2026"
+format: html
+editor: visual
+---
+
+# Load Libraries
+
+```{r}
+#| message: false
+#| warning: false
+library(readxl)
+library(janitor)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(emmeans)
+library(viridis)   # For colorblind-safe palette
+library(ggbeeswarm) # Optional: for nice jittered points
+library(sjPlot)
+library(ggeffects)
+library(ggsignif)
+library(performance)
+library(lme4)
+library(nlme)
+library(ggpubr)
+library(glmmTMB)
+library(multcomp)
+library(multcompView)
+library(rstatix)
+library(broom)
+library(ggh4x)
+library(MASS)
+library(tidyverse)
+library(betareg)
+library(gamlss)
+library(caret)
+library(DHARMa)
+```
+
+# Load Data Clean and Create palettes
+
+```{r}
+#| message: false
+#| warning: false
+ds_nu <- read_excel("C:/Users/sms689/Downloads/space-compost-metadata-2.2026.xlsx",
+                 sheet = "magentabox_metadata") %>%
+                 clean_names() %>%
+                 mutate(total_biomass_mg = overall_biomass_g * 1000) %>%
+                 mutate(shoot_biomass_mg = shoot_biomass_dry_g * 1000) %>%
+                 mutate(hec = factor(hec, levels = c("sterile","live","none")),
+                        amf = factor(amf, levels = c("live", "sterile")))%>%
+                 mutate(root_biomass_mg = root_biomass_dry_g * 1000)%>%
+                 mutate(root_shoot_ratio_mg = root_biomass_mg / shoot_biomass_mg)%>%
+                 mutate(total_chl = spad_avg * shoot_biomass_dry_g)%>%
+                 filter(!is.na(total_biomass_mg) ) %>%
+                 filter(urea == "none")
+#View(ds_nu)
+
+# Reference mean: mean of sterile-amf within each hec group
+# (used for both hec_gr and amf_gr)
+amf_sterile_means <- ds_nu %>%
+  filter(amf == "sterile") %>%
+  group_by(hec) %>%
+  summarise(amf_sterile_mean = mean(total_biomass_mg, na.rm = TRUE), .groups = "drop") %>%
+  pull(amf_sterile_mean)
+
+hec_none_means <- ds_nu %>%
+  filter(hec == "none") %>%
+  group_by(amf) %>%
+  summarise(hec_none_mean = mean(total_biomass_mg, na.rm = TRUE), .groups = "drop") %>%
+  pull(hec_none_mean)
+
+ref_means <- ds_nu %>%
+  filter(hec == "none", amf == "sterile") %>%
+  summarise(ref_mean = mean(total_biomass_mg, na.rm = TRUE)) %>%
+  pull(ref_mean)
+
+#View(ref_means) 14.1266666666667
+
+ds_nu <- ds_nu %>%
+  mutate(
+    hec_gr = if_else(
+      hec %in% c("live", "sterile"),
+      log(total_biomass_mg / hec_none_means),
+      NA_real_
+    ),
+    amf_gr = if_else(
+      amf == "live",
+      log(total_biomass_mg / amf_sterile_means),
+      NA_real_
+    ),
+    gr =log(total_biomass_mg / ref_means)
+    )
+
+write.csv(ds_nu, "C:/Users/sms689/Downloads/ds_nu.csv", row.names = FALSE)
+#ds_nu <- read.csv("C:/Users/sms689/Downloads/ds_nu.csv")
+
+pal_hec <- c("none" = "#818186", "live" = "#73b343", "sterile" = "#7f4753")
+
+pal_amf <- c("live" = "#5e8dbb", "sterile" = "#b56060")
+```
+
+# Checking the structure of data and normality of response variable
+```{r}
+num_vars <- ds_nu %>%
+  dplyr::select(where(is.numeric)) %>%
+  names()
+
+ds_nu %>%
+  dplyr::select(all_of(num_vars)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "variable",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(
+    bins = 30,
+    fill = "gray70",
+    color = "black"
+  ) +
+  facet_wrap(~ variable, scales = "free") +
+  theme_bw(base_size = 11) +
+  theme(
+    strip.text = element_text(face = "bold")
+  ) +
+  labs(
+    x = NULL,
+    y = "Count",
+    title = "Histograms of Continuous Variables (Normality Check)"
+  )
+## The histogram of overall biomass looks right skewed  
+```
+
+## Boxplot of Total Biomass by Replicate
+
+```{r}
+mutate(ds_nu, replicate = as.factor(replicate)) %>%
+ggplot(aes(x = replicate, y = overall_biomass_g, fill = replicate)) +
+  geom_boxplot()
+```
+
+## Model Selection
+
+```{r}
+random_m <- lmer(overall_biomass_g ~ amf * hec + (1|replicate), ds_nu)
+interactions_m <- lm(overall_biomass_g ~  amf * hec, ds_nu)
+additive_m <- lm(overall_biomass_g ~  amf + hec, ds_nu)
+AIC(random_m, interactions_m, additive_m)
+DHARMa::testResiduals(additive_m)
+DHARMa::testResiduals(interactions_m)
+DHARMa::testResiduals(random_m)
+anova(interactions_m)
+anova(additive_m)
+
+random_int_m <- lmer(spad_avg ~ amf * hec + (1|replicate), ds_nu)
+random_add_m <- lmer(spad_avg ~ amf + hec + (1|replicate), ds_nu)
+interactions_m <- lm(spad_avg ~  amf * hec, ds_nu)
+additive_m <- lm(spad_avg ~  amf + hec, ds_nu)
+AIC(random_int_m, random_add_m, interactions_m, additive_m)
+
+ggplot(ds_nu, aes(x = amf, y = spad_avg, fill = hec)) +
+  geom_boxplot() +
+  theme_bw()
+
+colnames(ds_nu)
+```
+
+# Plots
+
+## Reusable boxplot function
+
+```{r}
+# ---- Reusable boxplot function ----
+plot_boxplot_cld <- function(data, response_var, x_var, fill_var,
+                              palette,
+                              x_label, fill_label, y_label, title, 
+                              hline = NULL,
+                              caption_extra = NULL,
+                              ymax_offset = 0.5,
+                              facet_var = NULL,
+                              facet_labeller = NULL) {
+  
+  # 1. Fit separate models per facet if facet_var is specified, otherwise fit one model
+if (!is.null(facet_var)) {
+  
+  split_data <- data %>%
+    group_by(.data[[facet_var]]) %>%
+    group_split()
+  
+  facet_levels <- data %>%
+    distinct(.data[[facet_var]]) %>%
+    pull()
+
+  cld_list <- lapply(seq_along(split_data), function(i) {
+    df <- split_data[[i]]
+    facet_value <- facet_levels[i]
+    
+    formula_mod <- as.formula(paste(response_var, "~", fill_var, "*", x_var))
+    formula_emm <- as.formula(paste("~", fill_var, "|", x_var))
+    
+    mod <- lm(formula_mod, data = df)
+    emm <- emmeans(mod, formula_emm)
+    
+    multcomp::cld(emm, Letters = letters) %>%
+      as.data.frame() %>%
+      mutate(
+        .group = trimws(.group),
+        !!facet_var := facet_value
+      )
+  })
+  
+  cld_df <- bind_rows(cld_list)
+
+} else {
+
+  formula_mod <- as.formula(paste(response_var, "~", fill_var, "*", x_var))
+  formula_emm <- as.formula(paste("~", fill_var, "|", x_var))
+  
+  mod <- lm(formula_mod, data = data)
+  emm <- emmeans(mod, formula_emm)
+  # 2. CLD
+  cld_df <- multcomp::cld(emm, Letters = letters) %>%
+    as.data.frame() %>%
+    mutate(.group = trimws(.group))
+}
+  # 3. Whisker tops
+  group_vars <- c(x_var, fill_var, if (!is.null(facet_var)) facet_var)
+  
+  whisker_df <- data %>%
+    group_by(across(all_of(group_vars))) %>%
+    summarise(ymax = boxplot.stats(.data[[response_var]])$stats[5],
+              .groups = "drop")
+  
+  cld_df <- cld_df %>%
+    left_join(whisker_df, by = group_vars)
+  
+  # 4. Plot
+  p <- ggplot(data, aes(x = .data[[x_var]], y = .data[[response_var]],
+                        fill = .data[[fill_var]])) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.85, color = "gray30",
+               stat = "summary",
+               fun.data = function(x) {
+                 m   <- mean(x, na.rm = TRUE)
+                 sem <- sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+                 data.frame(
+                   ymin   = min(x, na.rm = TRUE),  # whisker bottom
+                   lower  = m - sem,
+                   middle = m,
+                   upper  = m + sem,
+                   ymax   = max(x, na.rm = TRUE)   # whisker top
+                 )
+               }
+  ) +
+    geom_point(
+      aes(color = .data[[fill_var]]),
+      position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+      alpha = 0.5, size = 2
+    ) +
+    { if (!is.null(hline)) geom_hline(yintercept = hline, linetype = "dashed", color = "gray40") } +
+    scale_fill_manual(name = fill_label, values = palette) +
+    scale_color_manual(name = fill_label, values = palette) +
+    geom_text(
+      data = cld_df,
+      aes(x = .data[[x_var]], y = ymax + ymax_offset,
+          label = .group, group = .data[[fill_var]]),
+      position = position_dodge(width = 0.75),
+      size = 4.5, inherit.aes = FALSE
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title       = element_text(face = "bold", hjust = 0.5, size = 18),
+      axis.title       = element_text(face = "bold", size = 15),
+      axis.text.x      = element_text(size = 15),
+      axis.text.y      = element_text(size = 15),
+      panel.grid.minor = element_blank(),
+      panel.border     = element_rect(color = "black", fill = NA),
+      strip.text       = element_text(face = "bold")
+    ) +
+    labs(
+      y = y_label, x = x_label, title = title,
+      subtitle = "Mean ± SEM, n = 3 per condition",
+      caption = paste("Letters indicate significant differences within HEC treatments. Linear Model:",
+                      response_var, "~", x_var, "*", fill_var,
+                      if (!is.null(caption_extra)) paste("\n", caption_extra) else "")
+    ) 
+
+  # 5. Add facet if specified
+  if (!is.null(facet_var)) {
+    p <- p + facet_wrap(
+      as.formula(paste("~", facet_var)),
+      labeller = if (!is.null(facet_labeller)) facet_labeller else label_value
+    )
+  }
+  
+  p
+}
+```
+
+## total biomass boxplot hec on x-axis, amf as fill
+
+```{r}
+#### Total Biomass by HEC and AMF Treatment
+#| fig-width: 12
+#| fig-height: 8
+plot_boxplot_cld(
+  data         =  ds_nu,
+  response_var = "total_biomass_mg",      
+  x_var        = "hec",
+  fill_var     = "amf",
+  palette      =  pal_amf,
+  x_label      = "HEC Treatment",
+  fill_label   = "AMF Treatment",
+  y_label      = "Total Biomass (mg)",
+  title        = "Total Biomass by HEC and AMF Treatment",
+  ymax_offset  = 5                     # adjust letter height per variable
+)
+ggsave("C:\\Users\\sms689\\Downloads\\total_biomass_hec_fill_with_amf_boxplot.bmp", width = 8, height = 6, dpi = 300)
+```
+
+## Total Biomass Boxplot with AMF on x-axis and HEC as fill, with CLD letters for significant differences
+
+```{r}
+#| fig-width: 12
+#| fig-height: 8
+
+# 1. Model and emmeans (no urea since this is ds_nu)
+mod <- lm((overall_biomass_g*1000) ~ amf * hec, data = ds_nu)
+emm <- emmeans(mod, ~ amf | hec)
+
+# 2. CLD — cld_df already has amf and hec from emmeans, no join needed
+cld_df <- multcomp::cld(emm, Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+
+# 3. Get whisker tops to position CLD letters
+whisker_df <- ds_nu %>%
+  group_by(amf, hec) %>%
+  summarise(ymax = boxplot.stats(overall_biomass_g*1000)$stats[5], .groups = "drop")
+
+cld_df <- cld_df %>%
+  left_join(whisker_df, by = c("amf", "hec"))
+
+# 4. Plot
+ds_nu %>%
+  ggplot(aes(x = amf, y = overall_biomass_g*1000, fill = hec)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.85, color = "gray30",
+             stat = "summary",
+             fun.data = function(x) {
+               data.frame(
+                 ymin   = min(x),
+                 lower  = quantile(x, 0.25),
+                 middle = mean(x),          # mean instead of median
+                 upper  = quantile(x, 0.75),
+                 ymax   = max(x)
+               )
+             }) +
+  geom_point(
+    aes(color = hec),
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    alpha = 0.5,
+    size = 2
+  ) +
+  scale_fill_manual(name = "HEC Treatment", values = pal_hec) +
+  scale_color_manual(name = "HEC Treatment", values = pal_hec) +
+  geom_text(
+    data = cld_df,
+    aes(x = amf, y = ymax + 5, label = .group, group = hec),
+    position = position_dodge(width = 0.75),
+    size = 4.5,
+    inherit.aes = FALSE
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title       = element_text(face = "bold", hjust = 0.5, size = 18),
+    axis.title       = element_text(face = "bold", size = 15),
+    axis.text.x      = element_text(size = 15),
+    axis.text.y      = element_text(size = 15),
+    panel.grid.minor = element_blank(),
+    panel.border     = element_rect(color = "black", fill = NA),
+    strip.text       = element_text(face = "bold")
+  ) +
+  labs(
+    y = "Total Biomass (mg)",
+    x = "AMF Treatment",
+    title = "Total Biomass by AMF and HEC Treatment",
+    caption = "Letters indicate groups that are significantly different from each other. Results based on Total Biomass ~ AMF × HEC"
+  )
+ggsave("C:\\Users\\sms689\\Downloads\\total_biomass_amf_fill_with_hec_boxplot.bmp", width = 8, height = 6, dpi = 300)
+```
+
+## root biomass boxplot hec on x-axis, amf as fill
+```{r}
+plot_boxplot_cld(
+  data         =  ds_nu,
+  response_var = "root_biomass_mg",      
+  x_var        = "hec",
+  fill_var     = "amf",
+  palette      =  pal_amf,
+  x_label      = "HEC Treatment",
+  fill_label   = "AMF Treatment",
+  y_label      = "Root Biomass (mg)",
+  title        = "Root Biomass by HEC and AMF Treatment",
+  ymax_offset  = 1                     # adjust letter height per variable
+)
+```
+
+## shoot biomass boxplot hec on x-axis, amf as fill
+```{r}
+plot_boxplot_cld(
+  data         =  ds_nu,
+  response_var = "shoot_biomass_mg",      
+  x_var        = "hec",
+  fill_var     = "amf",
+  palette      =  pal_amf,
+  x_label      = "HEC Treatment",
+  fill_label   = "AMF Treatment",
+  y_label      = "Shoot Biomass (mg)",
+  title        = "Shoot Biomass by HEC and AMF Treatment",
+  ymax_offset  = 5                     # adjust letter height per variable
+)
+```
+
+## spad boxplot hec on x-axis, amf as fill
+```{r}
+## Spad by HEC and AMF Treatment
+#| fig-width: 12
+#| fig-height: 8
+plot_boxplot_cld(
+  data         =  ds_nu,
+  response_var = "spad_avg",
+  x_var        = "hec",
+  fill_var     = "amf",
+  palette      =  pal_amf,
+  x_label      = "HEC Treatment",
+  fill_label   = "AMF Treatment",
+  y_label      = "Relative Leaf Chlorophyll Content",
+  title        = "Relative Leaf Chlorophyll Content (SPAD) \n by HEC and AMF Treatment",
+  ymax_offset  = 0.7                     # adjust letter height per variable
+)
+ggsave("C:\\Users\\sms689\\Downloads\\Chlorophyll_boxplot.bmp", width = 9, height = 5, dpi = 300)
+
+shell.exec("C:\\Users\\sms689\\Downloads\\Chlorophyll_boxplot.bmp")
+```
+
+## total chlorophyll boxplot hec on x-axis, amf as fill
+```{r}
+## total_chl by HEC and AMF Treatment
+#| fig-width: 12
+#| fig-height: 8
+plot_boxplot_cld(
+  data         =  ds_nu,
+  response_var = "total_chl",
+  x_var        = "hec",
+  fill_var     = "amf",
+  palette      =  pal_amf,
+  x_label      = "HEC Treatment",
+  fill_label   = "AMF Treatment",
+  y_label      = "Total Relative Leaf Chlorophyll Content",
+  title        = "Total Relative Leaf Chlorophyll Content (SPAD x Shoot Biomass grams) \n by HEC and AMF Treatment",
+  ymax_offset  = 0.1                     # adjust letter height per variable
+)
+
+ggsave("C:\\Users\\sms689\\Downloads\\Total_Chlorophyll_boxplot.bmp", width = 10, height = 6, dpi = 300)
+
+shell.exec("C:\\Users\\sms689\\Downloads\\Total_Chlorophyll_boxplot.bmp")
+```
+
+## root to shoot ratio boxplot hec on x-axis, amf as fill
+```{r}
+
+## root_shoot ratio by HEC and AMF Treatment
+#| fig-width: 12
+#| fig-height: 8
+plot_boxplot_cld(
+  data         =  ds_nu,
+  response_var = "root_shoot_ratio_mg",
+  x_var        = "hec",
+  fill_var     = "amf",
+  palette      =  pal_amf,
+  x_label      = "HEC Treatment",
+  fill_label   = "AMF Treatment",
+  y_label      = "Root to Shoot Ratio (mg)",
+  title        = "Root to Shoot Ratio by HEC and AMF Treatment",
+  ymax_offset  = 0.1                       # adjust letter height per variable
+)
+ggsave("C:\\Users\\sms689\\Downloads\\Root_to_Shoot_Ratio_boxplot.bmp", width = 9, height = 8, dpi = 300)
+```
+
+## root alongside shoot biomass boxplot on one graph, hec on x-axis, amf as fill
+```{r}
+ds_long <- ds_nu %>%
+  pivot_longer(
+    cols = c(root_biomass_mg, shoot_biomass_mg),
+    names_to = "tissue",
+    values_to = "biomass_mg"
+  ) %>%
+  mutate(tissue = recode(tissue,
+    "root_biomass_mg"  = "Root",
+    "shoot_biomass_mg" = "Shoot"
+  ))
+
+plot_boxplot_cld(
+  data         = ds_long,
+  response_var = "biomass_mg",
+  x_var        = "hec",
+  fill_var     = "amf",
+  facet_var    = "tissue",
+  palette      = pal_amf,
+  x_label      = "HEC Treatment",
+  fill_label   = "AMF Treatment",
+  y_label      = "Biomass (mg)",
+  title        = "Root vs. Shoot Biomass by HEC and AMF Treatment",
+  ymax_offset  = 5
+)
+ggsave("C:\\Users\\sms689\\Downloads\\Root_alongside_Shoot_Biomass_boxplot.bmp", width = 8, height = 6, dpi = 300)
+```
+
+
+## scatter plot of biomass vs spad with regression line and confidence interval, colored by hec
+```{r}
+cor.test(ds_nu$shoot_biomass_mg, ds_nu$spad_avg, method = "pearson")
+
+ggplot(ds_nu, aes(x = shoot_biomass_mg, y = spad_avg)) +
+  geom_point(aes(color = hec)) +
+  facet_wrap(~ amf) +
+  scale_color_manual(name = "HEC Treatment", values = pal_hec) +
+  theme_bw() +
+  geom_smooth(method = "lm") +
+  labs(x = "Total Biomass (g)", y = "SPAD", 
+       title = "Chlorophyll Dilution: SPAD vs Biomass")
+```
+
+## scatter plot of biomass vs spad with regression line and confidence interval, colored by amf
+```{r}
+cor.test(ds_nu$shoot_biomass_mg, ds_nu$spad_avg, method = "pearson")
+
+ggplot(ds_nu, aes(x = shoot_biomass_mg, y = spad_avg)) +
+  geom_point(aes(color = amf)) +
+  scale_color_manual(name = "AMF Treatment", values = pal_amf) +
+  facet_wrap(~ hec) +
+  theme_bw() +
+  geom_smooth(method = "lm") +
+  labs(x = "Total Biomass (g)", y = "SPAD", 
+       title = "Chlorophyll Dilution: SPAD vs Biomass")
+
+```
+
+## Response Variable by AMF with HEC fill
+
+```{r}
+#| fig-width: 12
+#| fig-height: 8
+plot_boxplot_cld(
+  data         = ds_nu,
+  response_var = "total_biomass_mg",
+  x_var        = "amf",
+  fill_var     = "hec",
+  palette      = pal_hec,
+  x_label      = "AMF Treatment",
+  fill_label   = "HEC Treatment",
+  y_label      = "Total Biomass (mg)",
+  title        = "Total Biomass by AMF and HEC Treatment",
+  ymax_offset  = 5                     # adjust letter height per variable
+)
+
+## Spad by AMF and HEC Treatment
+#| fig-width: 12
+#| fig-height: 8
+plot_boxplot_cld(
+  data         = ds_nu,
+  response_var = "spad_avg",      
+  x_var        = "amf",
+  fill_var     = "hec",
+  palette      = pal_hec,
+  x_label      = "AMF Treatment",
+  fill_label   = "HEC Treatment",
+  y_label      = "Chlorophyl Content (SPAD)",
+  title        = "Chlorophyl Content by AMF and HEC Treatment",
+  ymax_offset  = 0.5   # <-- change this per chart as needed
+)
+
+```
+
+## GR boxplot with hec on x-axis, amf as fill
+```{r}
+plot_boxplot_cld(
+  data         = ds_nu,
+  response_var = "gr",
+  x_var        = "hec",
+  fill_var     = "amf",
+  palette      = pal_amf,
+  x_label      = "HEC Treatment",
+  fill_label   = "AMF Treatment",
+  y_label      = "Plant Growth Response (GR)",
+  title        = "Plant Growth Response to HEC and AMF Treatment",
+  ymax_offset  = 0.1,
+  caption_extra= "GR = log ( total biomass / x̄ total biomass of none HEC & sterile AMF)",
+  hline        = 0
+)
+
+ggsave("C:\\Users\\sms689\\Downloads\\GR_boxplot.png", width = 8, height = 6, dpi = 300)
+shell.exec("C:\\Users\\sms689\\Downloads\\GR_boxplot.png")
+```
+
+## AMF GR Boxplot HEC Fill
+```{r}
+#| fig-width: 12
+#| fig-height: 8
+
+ds_nu %>%
+  ggplot(aes(x = hec, y = amf_gr, fill = hec)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.85, color = "gray30",
+               stat = "summary",
+               fun.data = function(x) {
+                 m   <- mean(x, na.rm = TRUE)
+                 sem <- sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+                 data.frame(
+                   ymin   = min(x, na.rm = TRUE),  # whisker bottom
+                   lower  = m - sem,
+                   middle = m,
+                   upper  = m + sem,
+                   ymax   = max(x, na.rm = TRUE)   # whisker top
+                 )
+               }
+  ) +
+  geom_point(
+    aes(color = hec),
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    alpha = 0.5,
+    size = 2
+  ) +
+  scale_fill_manual(name = "HEC Treatment", values = pal_hec) +
+  scale_color_manual(name = "HEC Treatment", values = pal_hec) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title       = element_text(face = "bold", hjust = 0.5, size = 18),
+    axis.title       = element_text(face = "bold", size = 15),
+    key              = element_blank(),
+    axis.text.x      = element_text(size = 15),
+    axis.text.y      = element_text(size = 15),
+    panel.grid.minor = element_blank(),
+    panel.border     = element_rect(color = "black", fill = NA),
+    strip.text       = element_text(face = "bold")
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray30") +
+  labs(
+    y = "AMF Growth Response (GR)",
+    x = "HEC Treatment",
+    title = "AMF Plant Growth Response by HEC Treatment",
+    subtitle = "Mean ± SEM, n = 3 per condition",
+    caption = "AMF GR = (log (live AMF biomass / x̄ sterile AMF biomass))"
+  )
+
+ggsave("C:\\Users\\sms689\\Downloads\\AMF_GR_Boxplot_HEC_fill .bmp", width = 8, height = 12, dpi = 300)
+```
+
+
+## AMF GR Boxplot amf Fill
+```{r}
+#| fig-width: 12
+#| fig-height: 8
+
+ds_nu %>%
+  ggplot(aes(x = hec, y = amf_gr, fill = amf)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.85, color = "gray30",
+               stat = "summary",
+               fun.data = function(x) {
+                 m   <- mean(x, na.rm = TRUE)
+                 sem <- sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+                 data.frame(
+                   ymin   = min(x, na.rm = TRUE),  # whisker bottom
+                   lower  = m - sem,
+                   middle = m,
+                   upper  = m + sem,
+                   ymax   = max(x, na.rm = TRUE)   # whisker top
+                 )
+               }
+  ) +
+  geom_point(
+    aes(color = amf),
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    alpha = 0.5,
+    size = 2
+  ) +
+  scale_fill_manual(name = "AMF Treatment", values = pal_amf) +
+  scale_color_manual(name = "AMF Treatment", values = pal_amf) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title       = element_text(face = "bold", hjust = 0.5, size = 18),
+    axis.title       = element_text(face = "bold", size = 15),
+    key              = element_blank(),
+    axis.text.x      = element_text(size = 15),
+    axis.text.y      = element_text(size = 15),
+    panel.grid.minor = element_blank(),
+    panel.border     = element_rect(color = "black", fill = NA),
+    strip.text       = element_text(face = "bold")
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray30") +
+  labs(
+    y = "AMF Growth Response (GR)",
+    x = "HEC Treatment",
+    title = "AMF Plant Growth Response by HEC Treatment",
+    subtitle = "Mean ± SEM, n = 3 per condition",
+    caption = "AMF GR = (log (live AMF biomass / x̄ sterile AMF biomass))"
+  )
+
+ggsave("C:\\Users\\sms689\\Downloads\\AMF_GR_Boxplot_AMF_fill .bmp", width = 8, height = 12, dpi = 300)
+```
+
+## HEC GR Boxplot
+```{r}
+#| fig-width: 12
+#| fig-height: 8
+ds_nhn <- ds_nu %>%
+  filter(hec != "none")
+#View(ds_ns)
+# 4. Plot
+ds_nhn %>%
+  ggplot(aes(x = hec, y = hec_gr, fill = amf)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.85, color = "gray30",
+               stat = "summary",
+               fun.data = function(x) {
+                 m   <- mean(x, na.rm = TRUE)
+                 sem <- sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+                 data.frame(
+                   ymin   = min(x, na.rm = TRUE),  # whisker bottom
+                   lower  = m - sem,
+                   middle = m,
+                   upper  = m + sem,
+                   ymax   = max(x, na.rm = TRUE)   # whisker top
+                 )
+               }
+  ) +
+  geom_point(
+    aes(color = amf),
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    alpha = 0.5,
+    size = 2
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray30") +
+  scale_fill_manual(name = "AMF Treatment", values = pal_amf) +
+  scale_color_manual(name = "AMF Treatment", values = pal_amf) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title       = element_text(face = "bold", hjust = 0.5, size = 18),
+    axis.title       = element_text(face = "bold", size = 15),
+    axis.text.x      = element_text(size = 15),
+    axis.text.y      = element_text(size = 15),
+    panel.grid.minor = element_blank(),
+    panel.border     = element_rect(color = "black", fill = NA),
+    strip.text       = element_text(face = "bold")
+  ) +
+  labs(
+    y = "HEC Growth Response (GR)",
+    x = "HEC Treatment",
+    title = "HEC Plant Growth Response by AMF Treatment",
+    subtitle = "Mean ± SEM, n = 3 per condition",
+    caption = "HEC GR = (log (HEC treatment biomass / x̄ none HEC biomass))"
+  )
+ggsave("C:\\Users\\sms689\\Downloads\\HEC_GR_Boxplot_amf_fill.bmp", width = 8, height = 12, dpi = 300)
+```
